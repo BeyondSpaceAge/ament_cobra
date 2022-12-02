@@ -31,7 +31,7 @@ def get_cobra_version(cobra_bin):
     output = output.decode().strip()
     tokens = output.split()
     if len(tokens) != 6:
-        raise RuntimeError("unexpected cobra version string '{}'".format(output))
+        raise RuntimeError(f"unexpected cobra version string '{output}'")
     return tokens[1]
 
 
@@ -41,17 +41,6 @@ def main(argv=sys.argv[1:]):
 
     # The Cobra rulesets
     rulesets = ['basic', 'cwe', 'p10', 'jpl', 'misra2012', 'C++/autosar']
-
-    # Some rulesets may require additional arguments. There are currently no extra
-    # arguments, but leave this here for now, to allow for convenient experiementation.
-    associated_args = {
-        'basic': [],
-        'cwe': [],
-        'p10': [],
-        'jpl': [],
-        'misra2012': [],
-        'C++/autosar': [],
-    }
 
     # Define and parse the command-line options
     parser = argparse.ArgumentParser(
@@ -121,6 +110,17 @@ def main(argv=sys.argv[1:]):
     # If the user has provided a valid ruleset with --ruleset, add it
     if args.ruleset in rulesets:
         cmd.extend(['-f', args.ruleset])
+        # Some rulesets may require additional arguments. There are currently no extra
+        # arguments, but leave this here for now, to allow for convenient experiementation.
+        associated_args = {
+            'basic': [],
+            'cwe': [],
+            'p10': [],
+            'jpl': [],
+            'misra2012': [],
+            'C++/autosar': [],
+        }
+
         cmd.extend(associated_args[args.ruleset])
     else:
         print(f'Error: Invalid ruleset specified: {args.ruleset}', file=sys.stderr)
@@ -149,7 +149,7 @@ def main(argv=sys.argv[1:]):
                     if option in ['-D', '-I', '-U']:
                         preprocessor_options.extend([option, options.__next__()])
                     elif option == '-isystem':
-                        preprocessor_options.extend(['-I' + options.__next__()])
+                        preprocessor_options.extend([f'-I{options.__next__()}'])
                     elif option.startswith(('-D', '-I', '-U')):
                         preprocessor_options.extend([option])
 
@@ -174,11 +174,10 @@ def main(argv=sys.argv[1:]):
                     arguments = cmd + [filename]
 
                 error_count += invoke_cobra(arguments, args.verbose)
-        # Otherwise, run Cobra on this group of files
         else:
             arguments = cmd
             for include_dir in (args.include_dirs or []):
-                cmd.extend(['-I' + include_dir])
+                cmd.extend([f'-I{include_dir}'])
             arguments.extend(files_in_group)
             error_count += invoke_cobra(arguments, args.verbose)
 
@@ -209,26 +208,25 @@ def main(argv=sys.argv[1:]):
             "Can't generate SARIF and/or JUnit XML output: "
             f"no input file for ruleset: {args.ruleset}",
             file=sys.stderr)
+    elif os.path.isfile(input_filename):
+        # Generate the xunit output file
+        if args.xunit_file:
+            write_output_file(input_filename, '-junit', args.xunit_file)
+
+        # Generate the SARIF output file
+        if args.sarif_file:
+            write_output_file(input_filename, '-sarif', args.sarif_file)
+
     else:
-        if not os.path.isfile(input_filename):
-            # Cobra doesn't produce an output file if there are no issues. So, in
-            # this case, write any output files in the appropriate format w/ no issues
-            if args.xunit_file:
-                write_empty_xunit_file(args.xunit_file,
-                                       get_input_filenames(groups))
+        # Cobra doesn't produce an output file if there are no issues. So, in
+        # this case, write any output files in the appropriate format w/ no issues
+        if args.xunit_file:
+            write_empty_xunit_file(args.xunit_file,
+                                   get_input_filenames(groups))
 
-            if args.sarif_file:
-                write_empty_sarif_file(args.sarif_file,
-                                       get_input_filenames(groups), cobra_version)
-        else:
-            # Generate the xunit output file
-            if args.xunit_file:
-                write_output_file(input_filename, '-junit', args.xunit_file)
-
-            # Generate the SARIF output file
-            if args.sarif_file:
-                write_output_file(input_filename, '-sarif', args.sarif_file)
-
+        if args.sarif_file:
+            write_empty_sarif_file(args.sarif_file,
+                                   get_input_filenames(groups), cobra_version)
     return rc
 
 
@@ -257,7 +255,7 @@ def invoke_cobra(arguments, verbose):
     for line in lines:
         m = re.search('.*, ([0-9]+) patterns ::.*', line)
         if m is not None:
-            total_errors += int(m.group(1))
+            total_errors += int(m[1])
         print(line)
 
     return total_errors
@@ -278,7 +276,7 @@ def get_files(paths, extensions):
                 # select files by extension
                 for filename in sorted(filenames):
                     _, ext = os.path.splitext(filename)
-                    ext_list = ['.%s' % e for e in extensions]
+                    ext_list = [f'.{e}' for e in extensions]
                     if ext in ext_list:
                         files.append(os.path.join(dirpath, filename))
         if os.path.isfile(path):
@@ -307,14 +305,13 @@ def get_file_groups(paths, extensions, exclude_patterns):
                 # select files by extension
                 for filename in sorted(filenames):
                     _, ext = os.path.splitext(filename)
-                    if ext in ('.%s' % e for e in extensions):
+                    if ext in (f'.{e}' for e in extensions):
                         filepath = os.path.join(dirpath, filename)
                         if os.path.realpath(filepath) not in excludes:
                             append_file_to_group(groups, filepath)
 
-        if os.path.isfile(path):
-            if os.path.realpath(path) not in excludes:
-                append_file_to_group(groups, path)
+        if os.path.isfile(path) and os.path.realpath(path) not in excludes:
+            append_file_to_group(groups, path)
 
     return groups
 
@@ -330,11 +327,13 @@ def append_file_to_group(groups, path):
     subfolder_names = ['include', 'src', 'test']
     matches = [
         re.search(
-            '^(.+%s%s)%s' %
-            (re.escape(os.sep), re.escape(subfolder_name), re.escape(os.sep)), path)
-        for subfolder_name in subfolder_names]
-    match_groups = [match.group(1) for match in matches if match]
-    if match_groups:
+            f'^(.+{re.escape(os.sep)}{re.escape(subfolder_name)}){re.escape(os.sep)}',
+            path,
+        )
+        for subfolder_name in subfolder_names
+    ]
+
+    if match_groups := [match.group(1) for match in matches if match]:
         match_groups = [{'group_len': len(x), 'group': x} for x in match_groups]
         sorted_groups = sorted(match_groups, key=lambda k: k['group_len'])
         base_path = sorted_groups[-1]['group']
@@ -343,10 +342,7 @@ def append_file_to_group(groups, path):
     # try to find repository root
     repo_root = None
     p = path
-    while p and repo_root is None:
-        # abort if root is reached
-        if os.path.dirname(p) == p:
-            break
+    while p and repo_root is None and os.path.dirname(p) != p:
         p = os.path.dirname(p)
         for marker in ['.git', '.hg', '.svn']:
             if os.path.exists(os.path.join(p, marker)):
@@ -367,8 +363,7 @@ def get_input_filenames(groups):
     filenames = []
     for group_name in sorted(groups.keys()):
         files_in_group = groups[group_name]
-        for filename in files_in_group:
-            filenames.append(filename)
+        filenames.extend(iter(files_in_group))
     return filenames
 
 
@@ -392,14 +387,17 @@ def write_empty_xunit_file(output_filename, input_filenames):
 
     with open(output_filename, 'w') as output_file:
         output = [
-            f'<xml version="1.0" encoding="UTF-8"?>',
+            '<xml version="1.0" encoding="UTF-8"?>',
             f'<testsuite name=".{base_name}" tests="{num_tests}" errors="0" failures="0" skipped="0" >',
         ]
 
+
         # Write a testcase for each source file
-        for filename in input_filenames:
-            output.append(
-                f'  <testcase name="{filename}" classname=".{base_name}"/>')
+        output.extend(
+            f'  <testcase name="{filename}" classname=".{base_name}"/>'
+            for filename in input_filenames
+        )
+
         output.append('</testsuite>')
         output_file.write('\n'.join(output))
 
